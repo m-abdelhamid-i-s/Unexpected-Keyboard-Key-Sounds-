@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - master
+      - feature/keypress-sounds
   pull_request:
 
 jobs:
