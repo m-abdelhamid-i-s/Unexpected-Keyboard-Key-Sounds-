@@ -148,6 +148,9 @@ public final class Pointers implements Handler.Callback
     }
     stopLongPress(ptr);
     KeyValue ptr_value = ptr.value;
+    // One explicit activation, including latching/unlatching a modifier.
+    // Selection changes and cancelled touches never reach this callback.
+    _handler.onPointerActivated(ptr_value);
     if (ptr.gesture != null && ptr.gesture.is_in_progress())
     {
       // A gesture was in progress
@@ -455,6 +458,7 @@ public final class Pointers implements Handler.Callback
     // For every other keys, key-repeat
     if (_config.keyrepeat_enabled)
     {
+      _handler.onPointerActivated(kv);
       _handler.onPointerHold(kv, ptr.modifiers);
       _longpress_handler.sendEmptyMessageDelayed(ptr.timeoutWhat,
           _config.longPressInterval);
@@ -821,5 +825,10 @@ public final class Pointers implements Handler.Callback
 
     /** Key is repeating. */
     public void onPointerHold(KeyValue k, Modifiers mods);
+
+    /** Feedback for an explicit touch release or a key repeat. Unlike down
+        and flags-changed events, this excludes selection changes, sliders,
+        cancellation and automatic modifier changes. [k] may be null. */
+    public void onPointerActivated(KeyValue k);
   }
 }
