@@ -11,6 +11,9 @@ on:
 jobs:
   Build-Apk:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     steps:
     - name: Checkout repo
       uses: actions/checkout@v6
@@ -18,17 +21,21 @@ jobs:
         submodules: true
 
     - name: Restore debug keystore from GitHub Secrets
+      env:
+        KEYSTORE_SECRET: ${{ secrets.DEBUG_KEYSTORE }}
       run: |
         # Check if exist and use the secret named DEBUG_KEYSTORE
         # The contents of the secret can be obtained -
         #  from the debug.keystore.asc from you local folder 
         #  (refer to CONTRIBUTING.md Using the local debug.keystore on the Github CI actions)
-        if [[ ! "${{ secrets.DEBUG_KEYSTORE }}" = "" ]]; then
-            echo "${{ secrets.DEBUG_KEYSTORE }}" > "debug.keystore.asc"
+        if [[ -n "$KEYSTORE_SECRET" ]]; then
+            printf '%s' "$KEYSTORE_SECRET" > "debug.keystore.asc"
             if [[ -s "debug.keystore.asc" ]]; then
                 echo "Restoring debug keystore from GitHub secrets"
                 gpg -d --passphrase "debug0" --batch "debug.keystore.asc" > "debug.keystore"
             fi
+        else
+            echo "::warning::DEBUG_KEYSTORE is not configured. This build uses a temporary signing key; future builds may require reinstalling."
         fi
 
     - uses: actions/setup-java@v4
@@ -55,11 +62,47 @@ jobs:
         DEBUG_KEY_ALIAS: debug
         DEBUG_KEY_PASSWORD: debug0
 
+    - name: Download V1 APK for certificate comparison
+      uses: actions/download-artifact@v4
+      continue-on-error: true # The comparison artifact will eventually expire.
+      with:
+        name: "m-abdelhamid-i-s feature-keypress-sounds debug_apk"
+        run-id: 39160749536
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        path: build/previous-apk
+
+    - name: Verify APK and compare V1 signing certificate
+      run: |
+        set -euo pipefail
+        tools="$ANDROID_HOME/build-tools/35.0.0"
+        apk=build/outputs/apk/debug/Unexpected-Keyboard-debug.apk
+        report=build/outputs/apk/debug/signing-report.txt
+        "$tools/apksigner" verify --verbose --print-certs "$apk" > "$report"
+        "$tools/aapt" dump badging "$apk" > build/outputs/apk/debug/package-info.txt
+        sha256sum "$apk" > build/outputs/apk/debug/apk-sha256.txt
+        current=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$report")
+        previous=build/previous-apk/Unexpected-Keyboard-debug.apk
+        if [[ -f "$previous" ]]; then
+          "$tools/apksigner" verify --print-certs "$previous" > build/previous-signing.txt
+          old=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' build/previous-signing.txt)
+          echo "V1 certificate SHA-256: $old" >> "$report"
+          if [[ "$current" = "$old" ]]; then
+            echo "V1 certificate comparison: MATCH" >> "$report"
+          else
+            echo "V1 certificate comparison: DIFFERENT — back up debug keyboard settings before uninstalling V1." >> "$report"
+          fi
+        else
+          echo "V1 certificate comparison: UNKNOWN — previous artifact unavailable." >> "$report"
+        fi
+        cat "$report" >> "$GITHUB_STEP_SUMMARY"
+
     - name: Upload debug APK
       uses: actions/upload-artifact@v4
       with:
         name: "${{env.artifact}} debug_apk"
-        path: build/outputs/apk/debug/*.apk
+        path: |
+          build/outputs/apk/debug/*.apk
+          build/outputs/apk/debug/*.txt
 
     - name: Check generated files
       run:

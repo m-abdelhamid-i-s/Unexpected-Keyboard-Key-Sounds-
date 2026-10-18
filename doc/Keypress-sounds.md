@@ -1,82 +1,98 @@
-# Native keypress sounds
+# Native keypress sounds — V2
 
-Enable **Settings → Behavior → Sound on keypress** (the category label may
-be translated). It is off by default. Android's system touch sounds must also
-be enabled, the phone must be in normal sound mode, and system sound volume
-must be audible. Changes take effect through the existing preference listener;
-no keyboard or application restart is required. Vibration settings are separate.
+Enable **Settings → Behavior → Sound on keypress** and choose **Keypress sound
+volume** (0–100%, default 50%). The toggle remains off by default. V2 uses its
+own enable/volume settings; Android's global touch sounds do not need to be
+turned on by the application. Normal sound mode and audible system volume are
+still required. Preferences refresh immediately, independently of vibration.
 
-## Research and design
+## Why V2
 
-Reviewed upstream on 2026-10-18, at `c87d9b8fbd501197286eaafeae88278dfbdd56b7`:
+S24 Ultra testing of V1 found delayed clicks and a dependency on Samsung's
+**Touch interactions** setting. V1 deliberately waited for release to classify
+the final gesture. It also used `AudioManager.playSoundEffect(int)`, which
+consults `SOUND_EFFECTS_ENABLED`. Those choices explain the reported behavior.
+V2 changes that policy at the user's request.
 
-- [#634](https://github.com/Julow/Unexpected-Keyboard/issues/634) requests sound
-  as feedback alongside vibration and on devices without a vibration motor.
-- [#823](https://github.com/Julow/Unexpected-Keyboard/issues/823#issuecomment-2543050340)
-  explicitly recommends `AudioManager.playSoundEffect()` and differentiated
-  effects. The suggested directional swipe sounds remain outside this version.
-- [#1306](https://github.com/Julow/Unexpected-Keyboard/issues/1306) requests the
-  system keypress effects and customization. This version uses native effects;
-  custom assets and independent volume are out of scope.
-- All three issues were open. Searches of upstream PR titles/bodies for sound,
-  keypress and audio, and commit history for sound, found no matching
-  implementation. The fork's starting commit matched upstream master. This
-  does not establish whether someone is working on an unpublished branch.
-- [Hacker's Keyboard's LatinIME](https://github.com/klausw/hackerskeyboard/blob/master/app/src/main/java/org/pocketworkstation/pckeyboard/LatinIME.java)
-  uses `onPress` → `playKeyClick`, a ringer-mode guard, and the four native
-  keypress effects. Its volume calculation and receiver architecture were not
-  copied. Its volume-taking overload does not meet our system-touch-preference
-  requirement.
+`Pointers.onTouchDown` now emits `onPointerFeedback` once for an accepted
+initial contact, immediately before the existing down/vibration callback.
+The same feedback callback handles long-press repeats. Release does not emit
+sound. It is intentionally separate from `onPointerDown`, which also fires
+when a swipe or long press changes selection. No input timing, repeat schedule,
+character commitment or haptic behavior changes.
 
-`Keyboard2View` passes touch events to `Pointers`, which selects and modifies
-keys. `onPointerDown` also fires for corner selection and long-press alternatives;
-it is not a unique activation. Flag changes also include cancellation and fake
-pointers used by automatic capitalization. `KeyEventHandler` later emits text,
-editing operations, macros and key events, so character commitment is too late
-and too broad a place for feedback.
-
-The new `onPointerActivated` callback is emitted once for each non-sliding
-pointer release and once for each repeat. It runs before the input handler;
-there is no timer, worker queue, file decoding or per-key resource setup in the
-sound helper. Release timing deliberately waits for the final selection: down
-timing cannot both be immediate and remain silent if the gesture is cancelled.
-Audio latency and the first sound after idle still need device measurement.
-
-| Interaction | Feedback |
+| Interaction | V2 sound policy |
 | --- | --- |
-| Normal tap | One sound on release |
-| Corner, circle or round-trip gesture | Final selected key on release; selection changes are silent |
-| Shift, Ctrl, Alt, Fn, compose/dead keys | One standard sound on explicit release, including latch/unlatch and double-tap lock |
-| Long-press modifier lock | One sound on release, no additional lock-time sound |
-| Long-press alternative | Final alternative on release |
-| Held character or Backspace | One sound per repeat, plus the existing final release action |
-| Multiple fingers | Each released pointer/repeat has its own feedback; no global debounce |
-| Cancellation/reset/unknown pointer/removed key | No new sound; already executed repeats cannot be undone |
-| Automatic modifier changes | Silent |
-| Cursor sliders | Silent, including initial movement and repeats |
-| Physical keyboard, suggestion and clipboard panels | Unchanged; no sound added by this feature |
+| Normal tap | One click at initial contact, none on release |
+| Corner/circle/round-trip gesture | Initial center key's effect; selection and release add nothing |
+| Shift/Ctrl/Alt/Fn/compose | One click on initial contact; latch/unlatch/lock add nothing |
+| Long-press alternative | Initial key's effect; no second click when the alternative is selected |
+| Held character/Backspace | Initial click plus one per repeat; final release action remains unchanged and adds no sound |
+| Multiple fingers | One click per accepted initial contact; no global debounce |
+| Cancel/reset | No additional sound; the initial click and earlier repeats cannot be undone |
+| Empty/removed center or invalid touch | No initial sound; no late click if a corner is selected |
+| Cursor sliding | Initial center click if valid (e.g. space); slider selection/movement/release are silent |
+| Automatic modifiers / physical keyboard | No feedback added |
 
-Moving outside the original key is part of Unexpected Keyboard's swipe system,
-not automatically a cancellation. Feedback follows the existing recognizer's
-selected value and does not change gesture acceptance or typing behavior.
+This trades final-key classification and cancellation silence for immediate
+feedback. For example, swiping from a letter to Backspace initially sounds like
+a letter; subsequent deletion repeats use the delete effect. A normal Backspace
+tap still uses the delete effect at contact. There is no gesture prediction.
 
-`KeypressSound.effect_of_key` is pure selection logic. Space (editing action,
-character or keycode), backward/forward deletion (including word deletion),
-and Enter/editor actions use `FX_KEYPRESS_SPACEBAR`, `FX_KEYPRESS_DELETE`, and
-`FX_KEYPRESS_RETURN`. Other explicit keys use `FX_KEYPRESS_STANDARD`. Nulls,
-placeholders and sliders are silent; no invalid-key sound is introduced.
+## Native audio and initialization
 
-Playback lazily obtains `AudioManager`, checks the current ringer mode for each
-enabled action, and uses **only `playSoundEffect(int)`**. This overload delegates
-the touch-sound preference and effect volume to Android. Silent and vibrate
-ringer modes are explicitly suppressed. Android controls routing, volume, DND
-and other audio restrictions. No audio focus, volume changes, sound assets,
-new permissions, telemetry, key logging or dependencies are added. Runtime
-audio-service failures are swallowed; a later action can retry.
+`KeypressSound` uses `playSoundEffect(effect, gain)`, passing the clamped app
+percentage divided by 100. This is an app-local linear gain, not a system volume
+change. Zero app volume/disabled sound avoid audio calls. Before playback it
+checks normal ringer mode and nonzero `STREAM_SYSTEM` volume. Android retains
+control of system mute, DND, routing and other restrictions. No permission,
+audio focus, global setting modification, custom asset or dependency is added.
+Runtime audio failures cannot interrupt input.
 
-## Automated validation
+AOSP evidence:
 
-Using the prepared JDK 17 / Android SDK 36 / NDK environment:
+- [AudioService](https://github.com/aosp-mirror/platform_frameworks_base/blob/master/services/core/java/com/android/server/audio/AudioService.java):
+  `playSoundEffect` checks the global preference; `playSoundEffectVolume` skips
+  that preference but checks system-stream mute. `loadSoundEffects` waits for
+  the audio service to finish loading.
+- [SoundEffectsHelper](https://github.com/aosp-mirror/platform_frameworks_base/blob/master/services/core/java/com/android/server/audio/SoundEffectsHelper.java):
+  playback loads samples if necessary before playing; an unloaded pool can
+  therefore add first-use delay. Android can unload effects when touch sounds
+  are disabled.
+
+V2 requests `loadSoundEffects()` when the keyboard view opens/resets with sound
+and nonzero app volume. Since this API can block, preparation runs on a small
+background task, at most one in flight per view. It never runs from touch or
+repeat callbacks, never plays a warm-up click, and never unloads the shared
+system effects. A subsequent opening retries preparation because the platform
+may have unloaded them. Input does not wait for the task: a very early first
+keypress can still encounter Android's normal lazy loading. Preparation and
+executor failures are contained. No custom audio engine or per-key asynchronous
+queue is introduced.
+
+The explicit-volume overload and preparation are not a guarantee of playback
+or latency on every OEM. Samsung may impose additional mute/routing policies;
+verify V2 with Touch interactions OFF, especially after reboot or idle.
+
+## Validation
+
+Local V2 validation: 47 JVM tests passed in each of debug and release (94
+executions, zero failures/errors/skips). All four generated-file checks and
+`git diff --check` passed. The debug APK built and verified with v1/v2 signatures,
+the preserved local certificate, and package `juloo.keyboard2.debug` (SDK 21–36).
+Its SHA-256 is
+`b2ec4b38ece11496f489b2d64f714b8a81540cef10327495acc5ca5b289627a3`.
+The CI artifact has its own certificate/checksum report; do not substitute this
+local APK hash when verifying the downloaded CI build.
+
+The JVM suites exercise the real pointer state machine with small Android
+resource/scheduler doubles. Coverage includes immediate feedback and no release
+duplication, swipes, cancellation, modifiers, multi-touch, repeat classification,
+sliders, default/live settings, gain clamping/zero volume, ringer/system-volume
+gating, deferred/coalesced preparation and audio failures. They do not emulate
+Android audio services or prove Samsung behavior.
+
+Using the prepared JDK 17 / SDK 36 / NDK environment:
 
 ```sh
 source /workspace/setup/env.sh
@@ -86,129 +102,80 @@ bash /workspace/setup/check-generated.sh
 git diff --check
 ```
 
-`test` runs debug and release JVM suites. New tests exercise mapping, the
-default and refreshed configuration, independent vibration, disabled sound,
-ringer transitions, playback failures, taps, swipes, modifiers, cancellation,
-repeat behavior, multi-touch and sliders. Small `test/android` doubles supply
-only resources and a deterministic handler; they are not shipped in the APK.
-The pointer tests execute the real pointer state machine, not a copy of it.
-They do not validate Android audio services or Samsung hardware.
+## APK installation and signing
 
-Validation on 2026-10-18: **43 tests passed in each variant** (86 executions,
-zero failures/errors/skips), including 22 new tests per variant. All four
-generated-file checks and `git diff --check` passed; `assembleDebug` succeeded.
-The local APK verifies with v1 and v2 signatures and contains the expected
-`juloo.keyboard2.debug` package, version 2.1.0 (56), min SDK 21 / target SDK 36.
-`apksigner` also prints standard v1 warnings about META-INF dependency metadata;
-the v2 signature verifies the APK as a whole.
+Open [Make Apk CI](https://github.com/m-abdelhamid-i-s/Unexpected-Keyboard-Key-Sounds-/actions/workflows/make-apk.yml),
+select the latest successful **feature/keypress-sounds** run, and download
+**m-abdelhamid-i-s feature-keypress-sounds debug_apk** (GitHub sign-in required).
+Extract the ZIP. It contains the APK, its SHA-256 checksum, package information,
+and a signing report comparing its certificate to V1 run `39160749536`.
+If that old artifact expires, the comparison explicitly reports UNKNOWN.
 
-Local APK SHA-256:
-`62bf77e75dac322239781ad921f08c48074bf5cff0e3105edd98c43f383cbedf`.
-Local signing-certificate SHA-256:
+Both versions use `juloo.keyboard2.debug`. The official `juloo.keyboard2`
+installation coexists and should be kept available as a fallback.
+
+**Do not assume V2 can update V1.** V1's CI log shows that it generated a fresh
+debug keystore. That private key was not uploaded; it cannot be recovered from
+the signed APK. A new CI run without the `DEBUG_KEYSTORE` secret generates a
+different key. Check `signing-report.txt` before installing:
+
+- MATCH: install as an update if the installed APK is that V1 CI build.
+- DIFFERENT: first export/back up debug keyboard settings, then uninstall only
+  **Unexpected Keyboard (Debug)** and install V2. Uninstallation removes its
+  private settings. Re-enable the debug keyboard and restore/configure it.
+- UNKNOWN, or a different installed build: compare certificates independently;
+  a normal update attempt will refuse a mismatch rather than overwrite it.
+
+The existing local `debug.keystore` is preserved and ignored by Git. Its public
+certificate SHA-256 is
 `010b0f9b92496fb77d817cec60c9f72fcf9ae4824bdd79c6e5d19649c65151ba`.
-CI artifacts can have different hashes and certificates; verify the particular
-APK you install.
-
-The generated-file checks cover the layout list, layout warnings, compose data
-and input-method XML, matching the existing CI checks.
-
-## APK delivery and signing
-
-The debug build uses **`juloo.keyboard2.debug`**, while the official app uses
-`juloo.keyboard2`. Both can be installed at the same time with separate settings
-and enabled-keyboard entries. This is a debug build, not a release-signed update
-of the official keyboard. Its APK is in `build/outputs/apk/debug/`.
-
-This branch enables the existing **Make Apk CI** workflow on pushes to
-`feature/keypress-sounds`. To download a CI build:
-
-1. Open [the fork's Actions page](https://github.com/m-abdelhamid-i-s/Unexpected-Keyboard-Key-Sounds-/actions/workflows/make-apk.yml).
-2. Select a successful run for **feature/keypress-sounds**. If needed, select
-   **Run workflow**, choose that branch, and run it. Do not select master.
-3. Download **m-abdelhamid-i-s feature-keypress-sounds debug_apk** under
-   Artifacts (GitHub sign-in required), extract the ZIP, and open the APK on the
-   phone. Allow installation from that browser/file manager when prompted.
-4. Enable **Unexpected Keyboard (debug)** in Android's keyboard management,
-   select it, and enable the sound option. The official keyboard remains
-   available as a fallback.
-
-Android requires the same signing key to update an installed debug package.
-The existing local `debug.keystore` is ignored by Git; preserve it in a private
-backup. Do not commit it or its encrypted export. To reuse this exact key in
-Actions, follow CONTRIBUTING.md's existing secret procedure:
+Keep a private backup. To use this same key for future CI builds, follow the
+existing CONTRIBUTING.md procedure:
 
 ```sh
 gpg -c --armor --pinentry-mode loopback --passphrase debug0 --yes debug.keystore
 ```
 
-Store the resulting ASCII-armored text in the fork's **Actions repository
-secret `DEBUG_KEYSTORE`**, not an Actions variable or artifact. This is GPG
-armored ciphertext, not a base64 encoding. The existing workflow restores it
-using alias `debug` and password `debug0`. That default password is public;
-confidential storage of the key is essential. No secrets are configured or
-exported by this feature. For local builds the existing `DEBUG_KEYSTORE`,
-`DEBUG_KEYSTORE_PASSWORD`, `DEBUG_KEY_ALIAS`, and `DEBUG_KEY_PASSWORD`
-environment variables can select a privately stored keystore.
+Store the resulting ASCII-armored ciphertext in the fork's **Actions repository
+secret `DEBUG_KEYSTORE`**. Never commit the key/export or upload it as an artifact.
+The default password `debug0` is public: confidential storage of the key matters.
+No repository secrets were created or changed by V2. Until the secret is set,
+CI keys remain temporary and should not be relied upon for future updates.
+Switching from a temporary CI key to the preserved local key requires a one-time
+reinstall unless certificates match. The existing local build environment
+variables `DEBUG_KEYSTORE`, `DEBUG_KEYSTORE_PASSWORD`, `DEBUG_KEY_ALIAS`, and
+`DEBUG_KEY_PASSWORD` can select another privately stored key.
 
-Without this secret, a fresh CI runner generates a new key, so successive APKs
-may not update each other or the locally built APK. Before relying on updates,
-compare certificate SHA-256 digests with:
+## S24 Ultra checklist
 
-```sh
-"$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs path/to/app.apk
-"$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging path/to/app.apk
-sha256sum path/to/app.apk
-```
+No V2 physical-device verification has been performed by the implementation work.
 
-Use the installed build-tools version if different. Losing the key means
-uninstalling the debug package before installing the differently signed build;
-that removes its settings. Preserve/export settings before doing so.
+1. Set Samsung **Touch interactions OFF**, normal sound mode and audible system
+   volume. Enable keyboard sound at 50%. Check clicks begin on contact while
+   holding the finger stationary; release must add no click.
+2. Compare slow and fast two-thumb typing. Check the first key after opening,
+   a long idle and reboot, and after toggling Touch interactions OFF/ON/OFF.
+3. Try all corners, circles, round trips, cancelled touches and cursor sliding.
+   Expect the initial center click with no selection/release chatter.
+4. Test Shift/Ctrl/Alt taps, locks, long-press alternatives, overlapping fingers,
+   repeated letters and held Backspace. Repeats should click separately.
+5. Test space, Enter/Search/Go/Send, Backspace/forward delete and word deletion.
+   A corner's first click may use its center's sound; repeats use the selection.
+6. Toggle keyboard sound off/on; change its volume to 0/25/50/100. Verify
+   vibration independently. No app/system restart should be needed.
+7. With the keyboard open, test silent mode, vibrate mode, zero system volume
+   and DND under its configured policy. Expect the applicable restrictions.
+8. Play music; check no pause, focus interruption or global-volume change.
+   Test speakers/headphones/Bluetooth, whose latency may differ.
 
-## Galaxy S24 Ultra manual checklist
+## Upstream scope
 
-No physical-device testing has been performed for this change.
-
-- Install alongside the official keyboard; verify both entries are available.
-  Before enabling sound, verify the debug keyboard behaves as before.
-- Enable sound with system touch sounds on, normal sound mode and audible
-  system volume. Type letters, numbers and punctuation slowly, then rapidly
-  with two thumbs. Check accuracy, one sound per action, latency and first
-  key after idle. Record Android/One UI version and perceived delay.
-- Test space, Backspace, forward delete, word deletion, Enter, Search/Go/Send,
-  Tab, Escape and layout switching in a notes app, browser and terminal.
-  Confirm sounds correspond to the selected action; OEM effects may sound alike.
-- Swipe to each corner, change direction, and try circle/round-trip gestures.
-  Expect one final sound, no selection chatter. Try cancelled touches and
-  empty/removed keys; cursor sliding should remain silent.
-- Tap/latch/unlatch Shift, Ctrl and Alt; test double-tap lock, long-press lock,
-  held-modifier chords and overlapping fingers. Automatic capitalization
-  should not add clicks.
-- Hold a letter and Backspace; compare emitted characters/deletions with
-  sounds, including release. Disable key repeat and retest. Try a long press
-  on the input-method switcher to select its alternate action.
-- Toggle sound off/on and return immediately to typing. Independently test
-  system vibration, custom vibration and zero vibration duration. Neither
-  setting should enable or disable the other.
-- With the keyboard still open, switch to silent and vibrate modes. Expect
-  silence. Return to sound mode; disable system touch sounds and then set
-  system volume to zero. Test DND under its configured system-sound policy.
-- Play music while typing: check no pausing, volume changes or audio-focus
-  interruption. Test speaker, headphones and Bluetooth; Bluetooth latency
-  can differ substantially.
-- Use a physical keyboard, switch applications, rotate, hide/show the IME and
-  unlock the phone. Check for stuck modifiers, unexpected sounds or crashes.
-
-## Limits and upstream review
-
-Native effect timbre, availability, routing, DND policy and latency depend on
-Android/OEM settings. This does not reproduce Samsung Keyboard's private sound
-assets. The JVM tests cannot establish device latency, actual silence or music
-mixing. Confirm these on the S24 Ultra before submitting upstream.
-
-The implementation is deliberately small and independent of haptics. An
-upstream review should agree on the release-time modifier/slider policy and
-review the lightweight JVM doubles. Follow-up work can add translations,
-device/instrumentation tests and latency measurements. Expand feedback to
-other panels only as a separate design decision. The fork-only CI branch
-trigger and delivery instructions can be omitted from an upstream PR. No PR
-is submitted by this work.
+V1 research reviewed [#634](https://github.com/Julow/Unexpected-Keyboard/issues/634),
+[#823](https://github.com/Julow/Unexpected-Keyboard/issues/823) (the maintainer's
+native AudioManager suggestion), [#1306](https://github.com/Julow/Unexpected-Keyboard/issues/1306),
+and [Hacker's Keyboard](https://github.com/klausw/hackerskeyboard/blob/master/app/src/main/java/org/pocketworkstation/pckeyboard/LatinIME.java).
+V2 keeps native effects and the existing architecture. OEM latency/timbre,
+first-use preparation races and Bluetooth remain device-dependent. Device
+measurements and translations are useful follow-ups. The fork-specific artifact
+comparison/delivery changes can be omitted from an upstream PR. No merge or PR
+is performed by this work.
