@@ -47,6 +47,7 @@ public final class Config
   public boolean suggestions_enabled;
   public boolean suggestions_add_space;
   public boolean sound_on_keypress;
+  public int sound_volume;
   // Let the system handle vibration when false.
   public boolean vibrate_custom;
   // Control the vibration if [vibrate_custom] is true.
@@ -164,6 +165,7 @@ public final class Config
     vibrate_custom = _prefs.getBoolean("vibrate_custom", false);
     vibrate_duration = _prefs.getInt("vibrate_duration", 20);
     sound_on_keypress = _prefs.getBoolean("sound_on_keypress", false);
+    sound_volume = _prefs.getInt("sound_volume", 50);
     longPressTimeout = _prefs.getInt("longpress_timeout", 600);
     longPressInterval = _prefs.getInt("longpress_interval", 65);
     keyrepeat_enabled = _prefs.getBoolean("keyrepeat_enabled", true);

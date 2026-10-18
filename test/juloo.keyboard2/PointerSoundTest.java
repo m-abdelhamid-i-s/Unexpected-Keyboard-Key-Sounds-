@@ -1,7 +1,6 @@
 package juloo.keyboard2;
 
 import android.media.AudioManager;
-import android.os.Handler;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -18,10 +17,10 @@ public class PointerSoundTest implements Pointers.IPointerEventHandler
 {
   Config config;
   Pointers pointers;
-  Handler scheduler;
+  TestUtils.Scheduler scheduler;
   Config previousConfig;
   KeypressSoundTest.Playback playback = new KeypressSoundTest.Playback();
-  KeypressSound sound = new KeypressSound(playback);
+  KeypressSound sound = new KeypressSound(playback, Runnable::run);
   List<KeyValue> activated = new ArrayList<KeyValue>();
   List<KeyValue> emitted = new ArrayList<KeyValue>();
   int downs = 0;
@@ -40,7 +39,7 @@ public class PointerSoundTest implements Pointers.IPointerEventHandler
     previousConfig = (Config)global.get(null);
     global.set(null, config);
     pointers = new Pointers(this, config);
-    scheduler = Handler.lastCreated;
+    scheduler = TestUtils.scheduler;
   }
 
   @After
@@ -53,11 +52,12 @@ public class PointerSoundTest implements Pointers.IPointerEventHandler
   }
 
   @Test
-  public void tap_plays_once_on_release_not_down_or_duplicate_up()
+  public void tap_plays_immediately_without_release_or_duplicate_up_sound()
   {
     down(1, layout("a", "1"));
     assertEquals(1, downs);
-    assertTrue(playback.effects.isEmpty());
+    assertEquals(1, playback.effects.size());
+    assertTrue(emitted.isEmpty());
     pointers.onTouchUp(1);
     pointers.onTouchUp(1);
     assertEquals(Arrays.asList(key("a")), emitted);
@@ -66,35 +66,36 @@ public class PointerSoundTest implements Pointers.IPointerEventHandler
   }
 
   @Test
-  public void swipe_plays_selected_effect_once_without_selection_sound()
+  public void swipe_keeps_initial_effect_without_selection_or_release_sound()
   {
     down(1, layout("a", "backspace"));
     pointers.onTouchMove(50, 50, 1); // top-left corner
     pointers.onTouchMove(40, 40, 1);
     assertEquals(2, downs);
-    assertTrue(playback.effects.isEmpty());
+    assertEquals(1, playback.effects.size());
     pointers.onTouchUp(1);
     assertEquals(Arrays.asList(key("backspace")), emitted);
-    assertEquals(Arrays.asList(AudioManager.FX_KEYPRESS_DELETE), playback.effects);
+    assertEquals(Arrays.asList(AudioManager.FX_KEYPRESS_STANDARD), playback.effects);
   }
 
   @Test
-  public void cancelled_swipe_and_unknown_pointer_are_silent()
+  public void cancelled_swipe_adds_no_sound_and_unknown_pointer_is_silent()
   {
     pointers.onTouchUp(99);
     pointers.onTouchMove(50, 50, 99);
+    assertTrue(playback.effects.isEmpty());
     down(1, layout("a", "1"));
     pointers.onTouchMove(50, 50, 1);
     pointers.onTouchCancel();
     pointers.onTouchUp(1);
     assertFalse(scheduler.fireNext());
-    assertTrue(activated.isEmpty());
+    assertEquals(Arrays.asList(key("a")), activated);
     assertTrue(emitted.isEmpty());
-    assertTrue(playback.effects.isEmpty());
+    assertEquals(1, playback.effects.size());
   }
 
   @Test
-  public void removed_selection_and_reset_are_silent()
+  public void removed_center_is_silent_and_reset_adds_no_sound()
   {
     down(1, layout(null, null));
     pointers.onTouchUp(1);
@@ -103,18 +104,19 @@ public class PointerSoundTest implements Pointers.IPointerEventHandler
     pointers.clear();
     pointers.onTouchUp(2);
     assertFalse(scheduler.fireNext());
-    assertTrue(playback.effects.isEmpty());
+    assertEquals(1, playback.effects.size());
   }
 
   @Test
-  public void modifier_latch_unlatch_and_lock_each_play_once_on_release()
+  public void modifier_contacts_play_once_without_latch_unlatch_or_lock_duplicates()
   {
     for (String name : new String[]{"shift", "ctrl", "alt"})
     {
       pointers.clear();
       KeyboardData.Key modifier = layout(name, null);
-      down(1, modifier);
       int before = playback.effects.size();
+      down(1, modifier);
+      assertEquals(before + 1, playback.effects.size());
       pointers.onTouchUp(1); // latch
       assertEquals(before + 1, playback.effects.size());
       down(2, modifier);
@@ -122,7 +124,7 @@ public class PointerSoundTest implements Pointers.IPointerEventHandler
       assertEquals(before + 2, playback.effects.size());
       down(3, modifier);
       assertTrue(scheduler.fireNext()); // long press locks, no extra sound
-      assertEquals(before + 2, playback.effects.size());
+      assertEquals(before + 3, playback.effects.size());
       pointers.onTouchUp(3);
       assertEquals(before + 3, playback.effects.size());
     }
@@ -150,12 +152,12 @@ public class PointerSoundTest implements Pointers.IPointerEventHandler
   {
     down(1, layout("a", "ctrl"));
     pointers.onTouchMove(50, 50, 1);
-    assertTrue(playback.effects.isEmpty());
+    assertEquals(1, playback.effects.size());
     down(2, layout("b", null));
     pointers.onTouchUp(2);
     pointers.onTouchUp(1);
     assertEquals(2, activated.size());
-    assertEquals(key("ctrl"), activated.get(1));
+    assertEquals(key("a"), activated.get(0));
     assertEquals(2, playback.effects.size());
   }
 
@@ -166,16 +168,16 @@ public class PointerSoundTest implements Pointers.IPointerEventHandler
     down(2, layout("b", null));
     pointers.onTouchUp(2);
     pointers.onTouchUp(1);
-    assertEquals(Arrays.asList(key("b"), key("a")), activated);
+    assertEquals(Arrays.asList(key("a"), key("b")), activated);
     down(3, layout("c", null));
     down(4, layout("d", null));
     pointers.onTouchCancel();
     assertFalse(scheduler.fireNext());
-    assertEquals(2, playback.effects.size());
+    assertEquals(4, playback.effects.size());
   }
 
   @Test
-  public void repeat_plays_once_per_emitted_action_including_existing_release_action()
+  public void repeat_plays_after_contact_without_extra_release_sound()
   {
     for (String name : new String[]{"a", "backspace"})
     {
@@ -186,7 +188,7 @@ public class PointerSoundTest implements Pointers.IPointerEventHandler
       assertTrue(scheduler.fireNext());
       assertTrue(scheduler.fireNext());
       assertTrue(scheduler.fireNext());
-      assertEquals(3, playback.effects.size());
+      assertEquals(4, playback.effects.size());
       pointers.onTouchUp(1); // Existing behavior emits one more key here.
       assertEquals(4, emitted.size());
       assertEquals(emitted, activated);
@@ -204,7 +206,7 @@ public class PointerSoundTest implements Pointers.IPointerEventHandler
     pointers.onTouchUp(1);
     assertFalse(scheduler.fireNext());
     assertEquals(1, emitted.size());
-    assertEquals(1, playback.effects.size());
+    assertEquals(2, playback.effects.size());
   }
 
   @Test
@@ -213,43 +215,44 @@ public class PointerSoundTest implements Pointers.IPointerEventHandler
     config.keyrepeat_enabled = false;
     down(1, layout("a", null));
     scheduler.fireNext();
-    assertTrue(playback.effects.isEmpty());
+    assertEquals(1, playback.effects.size());
     pointers.onTouchUp(1);
     assertEquals(1, playback.effects.size());
     playback.effects.clear();
     activated.clear();
     down(2, layout("change_method_prev", null));
     scheduler.fireNext();
-    assertTrue(playback.effects.isEmpty());
+    assertEquals(1, playback.effects.size());
     pointers.onTouchUp(2);
-    assertEquals(Arrays.asList(KeyValue.CHANGE_METHOD), activated);
+    assertEquals(Arrays.asList(KeyValue.CHANGE_METHOD_PREV), activated);
     assertEquals(1, playback.effects.size());
   }
 
   @Test
-  public void roundtrip_plays_only_the_final_selected_key()
+  public void roundtrip_does_not_add_sound_after_initial_contact()
   {
     down(1, layout("a", "1"));
     pointers.onTouchMove(50, 50, 1);
     pointers.onTouchMove(100, 100, 1);
-    assertTrue(playback.effects.isEmpty());
+    assertEquals(1, playback.effects.size());
     pointers.onTouchUp(1);
     assertEquals(1, activated.size());
-    assertEquals(emitted, activated);
+    assertEquals(Arrays.asList(key("a")), activated);
     assertEquals(1, playback.effects.size());
   }
 
   @Test
-  public void cursor_sliding_is_silent_including_repeats_and_release()
+  public void cursor_sliding_adds_no_sound_after_initial_space_contact()
   {
     down(1, layout("space", "cursor_left"));
     pointers.onTouchMove(50, 50, 1);
+    down(2, layout("a", null)); // ignored while sliding
     pointers.onTouchMove(-50, 50, 1);
     pointers.onTouchUp(1);
     assertTrue(downs >= 2);
     assertFalse(emitted.isEmpty());
-    assertTrue(activated.isEmpty());
-    assertTrue(playback.effects.isEmpty());
+    assertEquals(Arrays.asList(key("space")), activated);
+    assertEquals(Arrays.asList(AudioManager.FX_KEYPRESS_SPACEBAR), playback.effects);
   }
 
   @Test
@@ -274,6 +277,18 @@ public class PointerSoundTest implements Pointers.IPointerEventHandler
     pointers.onTouchDown(100, 100, id, key);
   }
 
+  @Test
+  public void swipe_repeat_uses_new_selection_but_release_is_silent()
+  {
+    down(1, layout("a", "backspace"));
+    pointers.onTouchMove(50, 50, 1);
+    scheduler.fireNext();
+    pointers.onTouchUp(1);
+    assertEquals(Arrays.asList(AudioManager.FX_KEYPRESS_STANDARD,
+          AudioManager.FX_KEYPRESS_DELETE), playback.effects);
+    assertEquals(Arrays.asList(key("backspace"), key("backspace")), emitted);
+  }
+
   static KeyboardData.Key layout(String center, String corner)
   {
     KeyValue[] keys = new KeyValue[9];
@@ -287,9 +302,9 @@ public class PointerSoundTest implements Pointers.IPointerEventHandler
   public void onPointerFlagsChanged(boolean vibrate) { flags++; }
   public void onPointerUp(KeyValue k, Pointers.Modifiers mods) { emitted.add(k); }
   public void onPointerHold(KeyValue k, Pointers.Modifiers mods) { emitted.add(k); }
-  public void onPointerActivated(KeyValue k)
+  public void onPointerFeedback(KeyValue k)
   {
     activated.add(k);
-    sound.play(k, config.sound_on_keypress);
+    sound.play(k, config.sound_on_keypress, config.sound_volume);
   }
 }

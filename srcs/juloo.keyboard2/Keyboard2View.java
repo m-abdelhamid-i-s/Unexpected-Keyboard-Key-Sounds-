@@ -117,6 +117,7 @@ public class Keyboard2View extends View
 
   public void reset()
   {
+    _keypress_sound.prepare(_config.sound_on_keypress, _config.sound_volume);
     _mods = Pointers.Modifiers.EMPTY;
     _pointers.clear();
     requestLayout();
@@ -187,9 +188,9 @@ public class Keyboard2View extends View
       vibrate();
   }
 
-  public void onPointerActivated(KeyValue k)
+  public void onPointerFeedback(KeyValue k)
   {
-    _keypress_sound.play(k, _config.sound_on_keypress);
+    _keypress_sound.play(k, _config.sound_on_keypress, _config.sound_volume);
   }
 
   private void updateFlags()

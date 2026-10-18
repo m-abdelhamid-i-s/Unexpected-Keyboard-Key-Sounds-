@@ -5,18 +5,17 @@ import java.util.Map;
 
 /** JVM-only scheduler for pointer tests. Time advances only when a test asks;
     no Android looper, sleeps or changes to the production repeat scheduler. */
-public class Handler
+public class Handler implements juloo.keyboard2.TestUtils.Scheduler
 {
   public interface Callback { boolean handleMessage(Message message); }
 
   private final Callback callback;
   private final Map<Integer, Long> pending = new LinkedHashMap<Integer, Long>();
-  public static Handler lastCreated;
 
   public Handler(Callback c)
   {
     callback = c;
-    lastCreated = this;
+    juloo.keyboard2.TestUtils.scheduler = this;
   }
 
   public boolean sendEmptyMessageDelayed(int what, long delay)

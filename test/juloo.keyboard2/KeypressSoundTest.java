@@ -17,6 +17,10 @@ public class KeypressSoundTest
     int checks = 0;
     boolean failCheck = false;
     boolean failPlay = false;
+    boolean failLoad = false;
+    int systemVolume = 5;
+    int loads = 0;
+    final List<Float> volumes = new ArrayList<Float>();
     final List<Integer> effects = new ArrayList<Integer>();
 
     public int getRingerMode()
@@ -26,10 +30,19 @@ public class KeypressSoundTest
       return ringer;
     }
 
-    public void playSoundEffect(int effect)
+    public int getSystemVolume() { return systemVolume; }
+
+    public void loadSoundEffects()
+    {
+      loads++;
+      if (failLoad) throw new IllegalStateException("Loading unavailable");
+    }
+
+    public void playSoundEffect(int effect, float volume)
     {
       if (failPlay) throw new IllegalStateException("Audio service unavailable");
       effects.add(effect);
+      volumes.add(volume);
     }
   }
 
@@ -64,10 +77,10 @@ public class KeypressSoundTest
   public void disabled_and_invalid_keys_do_not_contact_audio_service()
   {
     Playback playback = new Playback();
-    KeypressSound sound = new KeypressSound(playback);
-    sound.play(key("a"), false);
-    sound.play(null, true);
-    sound.play(key("cursor_left"), true);
+    KeypressSound sound = new KeypressSound(playback, Runnable::run);
+    sound.play(key("a"), false, 50);
+    sound.play(null, true, 50);
+    sound.play(key("cursor_left"), true, 50);
     assertEquals(0, playback.checks);
     assertTrue(playback.effects.isEmpty());
   }
@@ -76,15 +89,15 @@ public class KeypressSoundTest
   public void enabled_and_ringer_changes_take_effect_on_next_action()
   {
     Playback playback = new Playback();
-    KeypressSound sound = new KeypressSound(playback);
-    sound.play(key("a"), true);
+    KeypressSound sound = new KeypressSound(playback, Runnable::run);
+    sound.play(key("a"), true, 50);
     playback.ringer = AudioManager.RINGER_MODE_SILENT;
-    sound.play(key("a"), true);
+    sound.play(key("a"), true, 50);
     playback.ringer = AudioManager.RINGER_MODE_VIBRATE;
-    sound.play(key("a"), true);
+    sound.play(key("a"), true, 50);
     playback.ringer = AudioManager.RINGER_MODE_NORMAL;
-    sound.play(key("space"), true);
-    sound.play(key("enter"), false);
+    sound.play(key("space"), true, 50);
+    sound.play(key("enter"), false, 50);
     assertEquals(Arrays.asList(AudioManager.FX_KEYPRESS_STANDARD,
           AudioManager.FX_KEYPRESS_SPACEBAR), playback.effects);
   }
@@ -93,20 +106,79 @@ public class KeypressSoundTest
   public void audio_failures_are_contained_and_later_actions_recover()
   {
     Playback playback = new Playback();
-    KeypressSound sound = new KeypressSound(playback);
+    KeypressSound sound = new KeypressSound(playback, Runnable::run);
     playback.failCheck = true;
-    sound.play(key("a"), true);
+    sound.play(key("a"), true, 50);
     playback.failCheck = false;
     playback.failPlay = true;
-    sound.play(key("a"), true);
+    sound.play(key("a"), true, 50);
     playback.failPlay = false;
-    sound.play(key("a"), true);
+    sound.play(key("a"), true, 50);
     assertEquals(Arrays.asList(AudioManager.FX_KEYPRESS_STANDARD), playback.effects);
   }
 
   static KeyValue keyevent(int code)
   {
     return new KeyValue("", KeyValue.Kind.Keyevent, code, 0);
+  }
+
+  @Test
+  public void app_volume_is_independent_clamped_and_zero_is_silent()
+  {
+    Playback playback = new Playback();
+    KeypressSound sound = new KeypressSound(playback, Runnable::run);
+    sound.play(key("a"), true, 0);
+    sound.play(key("a"), true, -10);
+    sound.play(key("a"), false, 80);
+    assertEquals(0, playback.checks);
+    sound.play(key("a"), true, 25);
+    sound.play(key("a"), true, 80);
+    sound.play(key("a"), true, 200);
+    playback.systemVolume = 0;
+    sound.play(key("a"), true, 100);
+    assertEquals(Arrays.asList(0.25f, 0.8f, 1.f), playback.volumes);
+  }
+
+  @Test
+  public void preparation_is_deferred_coalesced_and_does_not_play()
+  {
+    Playback playback = new Playback();
+    List<Runnable> work = new ArrayList<Runnable>();
+    KeypressSound sound = new KeypressSound(playback, work::add);
+    sound.prepare(false, 50);
+    sound.prepare(true, 0);
+    assertTrue(work.isEmpty());
+    sound.prepare(true, 50);
+    sound.prepare(true, 50);
+    assertEquals(1, work.size());
+    assertEquals(0, playback.loads);
+    sound.play(key("a"), true, 50); // Input never waits for preparation.
+    assertEquals(1, playback.effects.size());
+    work.remove(0).run();
+    assertEquals(1, playback.loads);
+    assertEquals(1, playback.effects.size());
+    sound.prepare(true, 50); // Another opening may need to reload effects.
+    assertEquals(1, work.size());
+  }
+
+  @Test
+  public void failed_preparation_does_not_block_playback_or_future_preparation()
+  {
+    Playback playback = new Playback();
+    KeypressSound sound = new KeypressSound(playback, Runnable::run);
+    playback.failLoad = true;
+    sound.prepare(true, 50);
+    sound.play(key("a"), true, 50);
+    playback.failLoad = false;
+    sound.prepare(true, 50);
+    assertEquals(2, playback.loads);
+    assertEquals(1, playback.effects.size());
+    KeypressSound rejected = new KeypressSound(playback, task -> {
+      throw new java.util.concurrent.RejectedExecutionException();
+    });
+    rejected.prepare(true, 50);
+    rejected.play(key("a"), true, 50);
+    assertEquals(2, playback.effects.size());
   }
 
   static void assertEffect(int effect, KeyValue... keys)

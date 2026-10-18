@@ -17,7 +17,7 @@ import static org.junit.Assert.*;
 public class ConfigTest
 {
   final Map<String, Object> preferences = new HashMap<String, Object>();
-  final Resources resources = new Resources();
+  final Resources resources = new Resources(null, null, null);
 
   Config create() throws Exception
   {
@@ -41,11 +41,14 @@ public class ConfigTest
   {
     Config config = create();
     assertFalse(config.sound_on_keypress);
+    assertEquals(50, config.sound_volume);
     boolean vibrate = config.vibrate_custom;
     long duration = config.vibrate_duration;
     preferences.put("sound_on_keypress", true);
+    preferences.put("sound_volume", 75);
     config.refresh(resources, false, null);
     assertTrue(config.sound_on_keypress);
+    assertEquals(75, config.sound_volume);
     assertEquals(vibrate, config.vibrate_custom);
     assertEquals(duration, config.vibrate_duration);
     preferences.put("sound_on_keypress", false);
